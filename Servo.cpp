@@ -1,57 +1,62 @@
 #include <Servo.h>
 
-// Create two servo objects
-Servo tiltServo;  // Vertical movement
-Servo panServo;   // Horizontal movement
+Servo tiltServo;
+Servo panServo;
 
-// Define the pins the servos are connected to
-const int tiltPin = 9;  // Connect vertical servo signal wire here
-const int panPin = 10;  // Connect horizontal servo signal wire here
+const int tiltPin = 9;
+const int panPin = 10;
+
+char command_buffer[32];
 
 void setup() {
-  // Start serial communication at 9600 baud rate (must match Python script)
   Serial.begin(9600);
-  
-  // Attach the servos to their pins
   tiltServo.attach(tiltPin);
   panServo.attach(panPin);
-  
-  // Move servos to a neutral starting position
   tiltServo.write(90);
   panServo.write(90);
-
-  Serial.println("Arduino is ready to receive commands.");
+  Serial.println("Arduino is ready. Test sketch v2 loaded.");
 }
 
 void loop() {
-  // Check if there is data available to read from the serial port
-  if (Serial.available() > 0) {
-    // Read the incoming string until a newline character is received
-    String command = Serial.readStringUntil('\n');
+  read_serial_command();
+}
 
-    // Find the comma that separates the two angle values
-    int commaIndex = command.indexOf(',');
+void read_serial_command() {
+  static byte buffer_index = 0;
 
-    // Check if the command is in the expected format: <pan,tilt>
-    if (command.startsWith("<") && command.endsWith(">") && commaIndex != -1) {
-      
-      // Extract the pan angle string (from after '<' up to the comma)
-      String panString = command.substring(1, commaIndex);
-      
-      // Extract the tilt angle string (from after the comma up to '>')
-      String tiltString = command.substring(commaIndex + 1, command.length() - 1);
+  while (Serial.available() > 0) {
+    char incoming_char = Serial.read();
 
-      // Convert the strings to integers
-      int panAngle = panString.toInt();
-      int tiltAngle = tiltString.toInt();
-
-      // Constrain the angles to your safe operating range as a final safety measure
-      panAngle = constrain(panAngle, 50, 130);   // Horizontal range
-      tiltAngle = constrain(tiltAngle, 50, 140); // Vertical range
-
-      // Write the final angles to the servos
-      panServo.write(panAngle);
-      tiltServo.write(tiltAngle);
+    if (incoming_char == '\n') {
+      command_buffer[buffer_index] = '\0';
+      parse_and_actuate(command_buffer);
+      buffer_index = 0;
     }
+    else {
+      if (buffer_index < (sizeof(command_buffer) - 1)) {
+        command_buffer[buffer_index++] = incoming_char;
+      }
+    }
+  }
+}
+
+void parse_and_actuate(char* command) {
+  int panAngle, tiltAngle;
+
+  if (sscanf(command, "<%d,%d>", &panAngle, &tiltAngle) == 2) {
+    
+    panAngle = constrain(panAngle, 40, 140);
+    tiltAngle = constrain(tiltAngle, 40, 145);
+
+    // --- NEW ORDER OF OPERATIONS ---
+    // 1. Send the confirmation message FIRST (low-power operation)
+    Serial.print("Parsed -> P:");
+    Serial.print(panAngle);
+    Serial.print(", T:");
+    Serial.println(tiltAngle);
+    
+    // 2. THEN, try to move the servos (high-power operation)
+    panServo.write(panAngle);
+    tiltServo.write(tiltAngle);
   }
 }
