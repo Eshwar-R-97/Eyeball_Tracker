@@ -1,114 +1,113 @@
 import cv2
 import serial
 import time
+import numpy as np
 
 # --- CONFIGURATION ---
-# !! IMPORTANT !!
-# !! Replace 'YOUR_PORT_NAME' with the port your Arduino is on.
-# !! Find this in the Arduino IDE under Tools > Port.
-SERIAL_PORT = 'YOUR_PORT_NAME'
+SERIAL_PORT = '/dev/cu.usbmodem1201' # this is my port name on Mac, change as needed
 BAUD_RATE = 9600
-
-# Servo angle ranges (provided by you)
-TILT_SERVO_MIN = 50   # Vertical servo (pos1) min angle
-TILT_SERVO_MAX = 140  # Vertical servo (pos1) max angle
-PAN_SERVO_MIN = 50    # Horizontal servo (pos2) min angle
-PAN_SERVO_MAX = 130   # Horizontal servo (pos2) max angle
+PROTOTXT_PATH = "deploy.prototxt.txt"
+MODEL_PATH = "res10_300x300_ssd_iter_140000.caffemodel"
+CONFIDENCE_THRESHOLD = 0.5
+TILT_SERVO_MIN = 40
+TILT_SERVO_MAX = 145
+PAN_SERVO_MIN = 30
+PAN_SERVO_MAX = 150
+SMOOTHING_FACTOR = 0.1
+SEND_INTERVAL = 0.05 # seconds between sending commands to Arduino
 # --- END CONFIGURATION ---
 
-
 def map_value(value, in_min, in_max, out_min, out_max):
-    """Helper function to map a value from one range to another."""
     return int((value - in_min) * (out_max - out_min) / (in_max - in_min) + out_min)
 
 def send_command(arduino, pan_angle, tilt_angle):
-    """Sends the calculated pan and tilt angles to the Arduino."""
-    command = f"<{pan_angle},{tilt_angle}>\\n"
+    command = f"<{int(pan_angle)},{int(tilt_angle)}>\n"
     arduino.write(command.encode('utf-8'))
-    print(f"Sent: {command.strip()}")
+    print(f"Python Sent: {command.strip()}")
 
-# 1. --- SERIAL COMMUNICATION SETUP ---
+# --- Main script with Arduino listener ---
+arduino = None
+cap = None
 try:
+    print("Attempting to connect to Arduino...")
     arduino = serial.Serial(port=SERIAL_PORT, baudrate=BAUD_RATE, timeout=0.1)
-    # Allow time for the connection to establish
     time.sleep(2)
-    print("Serial connection established.")
-except Exception as e:
-    print(f"Error: Could not connect to {SERIAL_PORT}. Please check the port name and permissions.")
-    print(e)
-    exit()
+    print("--> Serial connection established.")
 
-# 2. --- OPENCV SETUP ---
-# Load the pre-trained Haar Cascade for face detection
-# This file comes with the OpenCV library
-face_cascade_path = cv2.data.haarcascades + 'haarcascade_frontalface_default.xml'
-face_cascade = cv2.CascadeClassifier(face_cascade_path)
+    print("Attempting to load face detector model...")
+    net = cv2.dnn.readNetFromCaffe(PROTOTXT_PATH, MODEL_PATH)
+    print("--> Model files loaded successfully.")
 
-# Start video capture from the default webcam (usually camera 0)
-cap = cv2.VideoCapture(0)
-if not cap.isOpened():
-    print("Error: Could not open webcam.")
-    arduino.close()
-    exit()
+    print("Attempting to open webcam...")
+    cap = cv2.VideoCapture(0)
+    if not cap.isOpened(): raise IOError("Cannot open webcam")
+    print("--> Webcam opened successfully.")
 
-# Get frame dimensions
-frame_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-frame_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-print(f"Webcam resolution: {frame_width}x{frame_height}")
+    current_pan_angle = 90
+    current_tilt_angle = 90
+    last_send_time = 0
 
-
-# 3. --- MAIN TRACKING LOOP ---
-try:
     while True:
-        # Read a frame from the webcam
         ret, frame = cap.read()
-        if not ret:
-            print("Error: Failed to grab frame.")
-            break
+        if not ret: break
 
-        # Flip the frame horizontally for a more intuitive "mirror" effect
         frame = cv2.flip(frame, 1)
+        (h, w) = frame.shape[:2]
 
-        # Convert the frame to grayscale for the face detector
-        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        blob = cv2.dnn.blobFromImage(cv2.resize(frame, (300, 300)), 1.0, (300, 300), (104.0, 177.0, 123.0))
+        net.setInput(blob)
+        detections = net.forward()
 
-        # Detect faces in the grayscale frame
-        faces = face_cascade.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=5, minSize=(100, 100))
-
-        if len(faces) > 0:
-            # For simplicity, track the first face found
-            x, y, w, h = faces[0]
-
-            # Calculate the center of the face
-            center_x = x + w // 2
-            center_y = y + h // 2
-
-            # Map the face center coordinates to your custom servo angle ranges
-            # NOTE: We swap the pan range to make the movement intuitive.
-            # When face is left (low X), servo angle is high (turns left).
-            pan_angle = map_value(center_x, 0, frame_width, PAN_SERVO_MAX, PAN_SERVO_MIN)
-            tilt_angle = map_value(center_y, 0, frame_height, TILT_SERVO_MIN, TILT_SERVO_MAX)
-            
-            # Send the calculated angles to the Arduino
-            send_command(arduino, pan_angle, tilt_angle)
-
-            # Draw a rectangle around the detected face for visual feedback
-            cv2.rectangle(frame, (x, y), (x + w, y + h), (0, 255, 0), 2)
+        best_confidence = 0
+        best_box = None
         
-        # Display the resulting frame in a window
-        cv2.imshow('Head Tracker', frame)
+        for i in range(0, detections.shape[2]):
+            confidence = detections[0, 0, i, 2]
+            if confidence > CONFIDENCE_THRESHOLD and confidence > best_confidence:
+                best_confidence = confidence
+                box = detections[0, 0, i, 3:7] * np.array([w, h, w, h])
+                best_box = box.astype("int")
 
-        # Check if the 'q' key was pressed to exit the loop
-        if cv2.waitKey(1) & 0xFF == ord('q'):
-            print("Exiting...")
+        if best_box is not None:
+            (startX, startY, endX, endY) = best_box
+            center_x = (startX + endX) // 2
+            center_y = (startY + endY) // 2
+            
+            # --- CORRECTED MAPPING LOGIC ---
+            target_pan_angle = map_value(center_x, 0, w, PAN_SERVO_MIN, PAN_SERVO_MAX)
+            target_tilt_angle = map_value(center_y, 0, h, TILT_SERVO_MAX, TILT_SERVO_MIN)
+            
+            current_pan_angle = (1 - SMOOTHING_FACTOR) * current_pan_angle + SMOOTHING_FACTOR * target_pan_angle
+            current_tilt_angle = (1 - SMOOTHING_FACTOR) * current_tilt_angle + SMOOTHING_FACTOR * target_tilt_angle
+            
+            current_time = time.time()
+            if arduino and (current_time - last_send_time) > SEND_INTERVAL:
+                send_command(arduino, current_pan_angle, current_tilt_angle)
+                last_send_time = time.time()
+
+            text = "{:.2f}%".format(best_confidence * 100)
+            y = startY - 10 if startY - 10 > 10 else startY + 10
+            cv2.rectangle(frame, (startX, startY), (endX, endY), (0, 255, 0), 2)
+            cv2.putText(frame, text, (startX, y), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 255, 0), 2)
+
+        cv2.imshow("DNN Head Tracker", frame)
+        
+        if arduino and arduino.in_waiting > 0:
+            response = arduino.readline().decode('utf-8').strip()
+            if response:
+                print(f"Arduino says: {response}")
+        
+        if cv2.waitKey(5) & 0xFF == ord('q'):
             break
+
+except Exception as e:
+    print(f"\n--- AN ERROR OCCURRED ---\nError: {e}\n-------------------------\n")
 
 finally:
-    # 4. --- CLEANUP ---
     print("Closing resources.")
-    cap.release()
+    if cap is not None: cap.release()
     cv2.destroyAllWindows()
-    # Send a final command to center the servos before closing
-    send_command(arduino, 90, 90)
-    arduino.close()
-    print("Serial connection closed.")
+    if arduino is not None:
+        send_command(arduino, 90, 90)
+        arduino.close()
+        print("Serial connection closed.")

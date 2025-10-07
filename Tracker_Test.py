@@ -1,88 +1,122 @@
 import cv2
 import serial
 import time
+import numpy as np
+import random
 
 # --- CONFIGURATION ---
-# !! IMPORTANT !!
-# !! Replace 'YOUR_PORT_NAME' with the port your Arduino is on.
-SERIAL_PORT = 'YOUR_PORT_NAME'
+SERIAL_PORT = '/dev/cu.usbmodem1201' 
 BAUD_RATE = 9600
-
-# Servo angle ranges
+PROTOTXT_PATH = "deploy.prototxt.txt"
+MODEL_PATH = "res10_300x300_ssd_iter_140000.caffemodel"
+CONFIDENCE_THRESHOLD = 0.5
 TILT_SERVO_MIN = 50
 TILT_SERVO_MAX = 140
 PAN_SERVO_MIN = 50
 PAN_SERVO_MAX = 130
+
+SACCADE_SPEED = 0.10 
 # --- END CONFIGURATION ---
 
-
-def map_value(value, in_min, in_max, out_min, out_max):
-    return int((value - in_min) * (out_max - out_min) / (in_max - in_min) + out_min)
-
 def send_command(arduino, pan_angle, tilt_angle):
-    command = f"<{pan_angle},{tilt_angle}>\\n"
+    command = f"<{int(pan_angle)},{int(tilt_angle)}>\n"
     arduino.write(command.encode('utf-8'))
-    print(f"Sent: {command.strip()}")
 
-# --- SERIAL COMMUNICATION SETUP ---
+# --- Main script with state machine ---
+arduino = None
+cap = None
 try:
+    print("Attempting to connect to Arduino...")
     arduino = serial.Serial(port=SERIAL_PORT, baudrate=BAUD_RATE, timeout=0.1)
     time.sleep(2)
-    print("Serial connection established.")
-except Exception as e:
-    print(f"Error connecting to Arduino: {e}")
-    # We can continue without an Arduino for visual testing
-    arduino = None
+    print("--> Serial connection established.")
 
-# --- OPENCV SETUP ---
-face_cascade_path = cv2.data.haarcascades + 'haarcascade_frontalface_default.xml'
-face_cascade = cv2.CascadeClassifier(face_cascade_path)
-cap = cv2.VideoCapture(0)
-frame_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-frame_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    print("Attempting to load face detector model...")
+    net = cv2.dnn.readNetFromCaffe(PROTOTXT_PATH, MODEL_PATH)
+    print("--> Model files loaded successfully.")
 
+    print("Attempting to open webcam...")
+    cap = cv2.VideoCapture(0)
+    if not cap.isOpened(): raise IOError("Cannot open webcam")
+    print("--> Webcam opened successfully.")
 
-# --- MAIN TRACKING LOOP ---
-try:
+    current_mode = 'IDLE'
+    idle_sub_mode = 'FIXATING'
+    current_pan = 90
+    current_tilt = 90
+    
+    target_pan = 90
+    target_tilt = 90
+    last_saccade_time = time.time()
+    saccade_interval = random.uniform(2.0, 5.0)
+
     while True:
         ret, frame = cap.read()
         if not ret: break
-        
+
         frame = cv2.flip(frame, 1)
-        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-        faces = face_cascade.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=5, minSize=(100, 100))
+        (h, w) = frame.shape[:2]
+        
+        blob = cv2.dnn.blobFromImage(cv2.resize(frame, (300, 300)), 1.0, (300, 300), (104.0, 177.0, 123.0))
+        net.setInput(blob)
+        detections = net.forward()
 
-        if len(faces) > 0:
-            x, y, w, h = faces[0]
-            center_x = x + w // 2
-            center_y = y + h // 2
+        face_found = False
+        for i in range(0, detections.shape[2]):
+            confidence = detections[0, 0, i, 2]
+            if confidence > CONFIDENCE_THRESHOLD:
+                face_found = True
+                box = detections[0, 0, i, 3:7] * np.array([w, h, w, h])
+                (startX, startY, endX, endY) = box.astype("int")
+                cv2.rectangle(frame, (startX, startY), (endX, endY), (0, 0, 255), 2)
+                cv2.putText(frame, 'FACE DETECTED', (startX, startY - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+                break
 
-            # --- VISUALS ARE DRAWN HERE ---
-            # 1. This line draws the green rectangle around the face
-            cv2.rectangle(frame, (x, y), (x + w, y + h), (0, 255, 0), 2)
+        if face_found:
+            if current_mode != 'FACE_DETECTED':
+                print("Face detected! Freezing movement.")
+                current_mode = 'FACE_DETECTED'
+        else:
+            if current_mode != 'IDLE':
+                print("Face lost. Resuming idle movement.")
+                current_mode = 'IDLE'
+                idle_sub_mode = 'FIXATING'
+                last_saccade_time = time.time()
 
-            # 2. NEW: This line adds the "Head" text label above the box
-            cv2.putText(frame, 'Head', (x, y - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 255, 0), 2)
-            # --- END VISUALS ---
+        if current_mode == 'IDLE':
+            if idle_sub_mode == 'FIXATING':
+                if time.time() - last_saccade_time > saccade_interval:
+                    target_pan = random.randint(PAN_SERVO_MIN, PAN_SERVO_MAX)
+                    target_tilt = random.randint(TILT_SERVO_MIN, TILT_SERVO_MAX)
+                    idle_sub_mode = 'MOVING'
+                    
+            elif idle_sub_mode == 'MOVING':
+                current_pan = (1 - SACCADE_SPEED) * current_pan + SACCADE_SPEED * target_pan
+                current_tilt = (1 - SACCADE_SPEED) * current_tilt + SACCADE_SPEED * target_tilt
+
+                if abs(current_pan - target_pan) < 2 and abs(current_tilt - target_tilt) < 2:
+                    current_pan = target_pan
+                    current_tilt = target_tilt
+                    idle_sub_mode = 'FIXATING'
+                    last_saccade_time = time.time()
+                    saccade_interval = random.uniform(2.0, 5.0)
 
             if arduino:
-                pan_angle = map_value(center_x, 0, frame_width, PAN_SERVO_MAX, PAN_SERVO_MIN)
-                tilt_angle = map_value(center_y, 0, frame_height, TILT_SERVO_MIN, TILT_SERVO_MAX)
-                send_command(arduino, pan_angle, tilt_angle)
+                send_command(arduino, current_pan, current_tilt)
         
-        # This line displays the window with the webcam feed and all the drawings
-        cv2.imshow('Head Tracker', frame)
-
-        if cv2.waitKey(1) & 0xFF == ord('q'):
+        cv2.imshow("Eyeball Bot", frame)
+        
+        if cv2.waitKey(5) & 0xFF == ord('q'):
             break
 
+except Exception as e:
+    print(f"\n--- AN ERROR OCCURRED ---\nError: {e}\n-------------------------\n")
+
 finally:
-    # --- CLEANUP ---
     print("Closing resources.")
-    cap.release()
+    if cap is not None: cap.release()
     cv2.destroyAllWindows()
-    if arduino:
-        send_command(arduino, 90, 90) # Center servos on exit
+    if arduino is not None:
+        send_command(arduino, 90, 90)
         arduino.close()
         print("Serial connection closed.")
-        print(f"Webcam resolution: {frame_width}x{frame_height}")
