@@ -1,5 +1,5 @@
 # Eyeball_Tracker
-Basically code to control servo eyes to that follow you. Open CV for face detection, C++ for the arduino uno listening script. Python should be run on a computer and arduino should be running more lightweight C++ listening script to assign servos new positions. 
+Basically code to control servo eyes to that follow you. Open CV for face detection, C++ for the arduino uno listening script. Python should be run on a computer and arduino should be running more lightweight C++ listening script to assign servos new positions. Inspired based on Will Cogley's series of 3d printable moving eyes, if you want to run this code yourself, all physical specs to build the eyes are in this video: https://www.youtube.com/watch?v=uzPisRAmo2s&t=1s. Didn't build the eye lids due to lack of servos at the time, may update project sometime in the next year to use more servos and do more. 
 
 https://github.com/user-attachments/assets/f5cbaef0-9185-47d2-b2ab-48bbbcc13ae4
 
