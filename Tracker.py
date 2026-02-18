@@ -3,7 +3,7 @@ import serial
 import time
 import numpy as np
 
-# --- CONFIGURATION ---
+# config
 SERIAL_PORT = '/dev/cu.usbmodem1201' # this is my port name on Mac, change as needed
 BAUD_RATE = 9600
 PROTOTXT_PATH = "deploy.prototxt.txt"
@@ -15,17 +15,18 @@ PAN_SERVO_MIN = 30
 PAN_SERVO_MAX = 150
 SMOOTHING_FACTOR = 0.1
 SEND_INTERVAL = 0.05 # seconds between sending commands to Arduino
-# --- END CONFIGURATION ---
 
+# map parts of your screen to certain inputs outputs
 def map_value(value, in_min, in_max, out_min, out_max):
     return int((value - in_min) * (out_max - out_min) / (in_max - in_min) + out_min)
 
+#send command to arduino
 def send_command(arduino, pan_angle, tilt_angle):
     command = f"<{int(pan_angle)},{int(tilt_angle)}>\n"
     arduino.write(command.encode('utf-8'))
     print(f"Python Sent: {command.strip()}")
 
-# --- Main script with Arduino listener ---
+# arduino listener script
 arduino = None
 cap = None
 try:
