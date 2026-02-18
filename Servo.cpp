@@ -48,14 +48,14 @@ void parse_and_actuate(char* command) {
     panAngle = constrain(panAngle, 40, 140);
     tiltAngle = constrain(tiltAngle, 40, 145);
 
-    // --- NEW ORDER OF OPERATIONS ---
-    // 1. Send the confirmation message FIRST (low-power operation)
+    // order of operations
+    // send the confirmation message FIRST (low-power operation)
     Serial.print("Parsed -> P:");
     Serial.print(panAngle);
     Serial.print(", T:");
     Serial.println(tiltAngle);
     
-    // 2. THEN, try to move the servos (high-power operation)
+    // then, try to move the servos (high-power operation)
     panServo.write(panAngle);
     tiltServo.write(tiltAngle);
   }
