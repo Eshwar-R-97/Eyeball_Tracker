@@ -4,7 +4,9 @@ import time
 import numpy as np
 import random
 
-# --- CONFIGURATION ---
+#This is very similar to Tracker.py but changed this one so that the eye moves randomly and naturally, and freezes when the camera detects a face, may be cool for haunted house type implementation
+
+# config
 SERIAL_PORT = '/dev/cu.usbmodem1201' 
 BAUD_RATE = 9600
 PROTOTXT_PATH = "deploy.prototxt.txt"
@@ -16,13 +18,12 @@ PAN_SERVO_MIN = 50
 PAN_SERVO_MAX = 130
 
 SACCADE_SPEED = 0.10 
-# --- END CONFIGURATION ---
 
 def send_command(arduino, pan_angle, tilt_angle):
     command = f"<{int(pan_angle)},{int(tilt_angle)}>\n"
     arduino.write(command.encode('utf-8'))
 
-# --- Main script with state machine ---
+# main script with state machine
 arduino = None
 cap = None
 try:
